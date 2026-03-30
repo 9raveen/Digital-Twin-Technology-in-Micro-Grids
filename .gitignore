@@ -209,8 +209,9 @@ __marimo__/
 #=== Project specific (IMPORTANT) ===
 # Dataset
 datasets/
-*.txt
 *.csv
+*.txt
+__pycache__/
 
 
 # Zip files
