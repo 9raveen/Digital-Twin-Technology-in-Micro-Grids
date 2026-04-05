@@ -20,7 +20,7 @@ def load_electricity_370(path: str) -> pd.Series:
     - Aggregates 370 clients from kW to MW
     - Resamples from 15-min to hourly resolution
 
-    Parametersdd
+    Parameters
     ----------
     path : str
         Path to LD2011_2014.txt
@@ -100,7 +100,7 @@ def scale_to_ieee_base(load_norm: pd.Series, base_mw: float = IEEE33_BASE_LOAD_M
     return load_norm * base_mw
 
 
-def prepare_load_series(path: str, n_days: int = 60) -> pd.Series:
+def prepare_load_series(path: str, n_days: int = 30) -> pd.Series:
     """
     Full pipeline: raw CSV → simulation-ready hourly load in MW.
 
@@ -163,7 +163,7 @@ if __name__ == '__main__':
     import sys
 
     path   = sys.argv[1] if len(sys.argv) > 1 else r'datasets\electricityloaddiagrams20112014\LD2011_2014.txt'
-    n_days = int(sys.argv[2]) if len(sys.argv) > 2 else 60
+    n_days = int(sys.argv[2]) if len(sys.argv) > 2 else 30
 
     print(f"Loading data from: {path}")
     load = prepare_load_series(path, n_days=60)
