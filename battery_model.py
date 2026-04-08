@@ -26,7 +26,7 @@ Output per timestep:
   soc       : float  — state of charge after this timestep [0, 1]
 """
 
-import numpy as np
+import numpy as np  
 
 
 class BatteryModel:
