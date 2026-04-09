@@ -26,7 +26,7 @@ import numpy as np
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-PV_CAPACITY_MW = 1.5    # Installed PV capacity assumed for the microgrid
+PV_CAPACITY_MW = 3.0    # Installed PV capacity assumed for the microgrid // before 1.5 now changed to 3.0 daytime surplus becomes meaningful
 
 
 # ── Solar Generation ──────────────────────────────────────────────────────────

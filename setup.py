@@ -17,7 +17,7 @@ def get_requirements(file_path:str)->list[str]:
     return requirements        
 
 setup(
-name='mlproject',
+name='Digital Twin',
 version='0.0.1',
 author='Praveen',
 author_email='vp5320424@gmail.com',
