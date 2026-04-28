@@ -192,7 +192,7 @@ def run_simulation() -> pd.DataFrame:
 
         records.append(record)
         print_progress(t, T, record, interval=72)
-
+        
     # ── Build DataFrame ───────────────────────────────────────────
     df = pd.DataFrame(records)
 

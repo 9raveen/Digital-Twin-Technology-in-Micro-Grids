@@ -31,7 +31,6 @@ PV_BUS                = 17      # mid-feeder bus for PV injection
 V_MIN_LIMIT           = 0.93    # IEEE voltage lower bound (pu) At 0.93 pu, equipment performance degrades significantly."
 V_MAX_LIMIT           = 1.05    # IEEE voltage upper bound (pu)
 
-
 # ── Network Initialisation ────────────────────────────────────────────────────
 
 def create_network() -> pp.pandapowerNet:

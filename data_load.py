@@ -10,7 +10,6 @@ import pandas as pd
 # IEEE 33-bus total feeder base load
 IEEE33_BASE_LOAD_MW = 3.715
 
-
 def load_electricity_370(path: str) -> pd.Series:
     """
     Read UCI Electricity Load Diagrams dataset.
