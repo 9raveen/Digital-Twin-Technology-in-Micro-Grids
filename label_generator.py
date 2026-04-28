@@ -3,16 +3,21 @@ label_generator.py
 ==================
 Physics-based blackout label generator for the Digital Twin Microgrid project.
 
-Generates deterministic binary blackout labels from power system physics.
+Generates binary blackout labels from power system physics with realistic noise.
 These labels serve as ground truth for ML classifier training.
 
 Blackout condition:
-  label = 1  if  v_min < V_BLACKOUT_THRESHOLD  (voltage violation)
+  label = 1  if  v_min_measured < V_BLACKOUT_THRESHOLD  (voltage violation)
   label = 0  otherwise
+
+Measurement realism:
+  - v_min_measured = v_min_ideal + noise  (Gaussian, σ=0.007 pu)
+  - Simulates realistic sensor error in field measurement devices
+  - Breaks artificial deterministic relationship between features and labels
 
 Threshold choice:
   V_BLACKOUT_THRESHOLD = 0.93 pu
-  - Gives ~25% blackout rate across the 30-day simulation
+  - Gives ~20-25% blackout rate across the 30-day simulation
   - Physically justified: at 0.93 pu, equipment performance degrades
     significantly in distribution networks
   - Academically defensible: distribution operators often use tighter
@@ -25,10 +30,15 @@ Severity classification (for analysis and dashboard):
   NORMAL   : v_min >= 0.94
 """
 
+import numpy as np
+
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 V_BLACKOUT_THRESHOLD = 0.93    # pu — primary blackout trigger
+
+# Measurement noise (realistic sensor error)
+VOLTAGE_NOISE_STD = 0.007      # pu (±0.7%) — typical phasor measurement unit accuracy
 
 # Severity bands (for analysis only — not used in ML labels)
 V_CRITICAL  = 0.92
@@ -38,26 +48,33 @@ V_MODERATE  = 0.94
 
 # ── Label Generation ──────────────────────────────────────────────────────────
 
-def generate_label(v_min: float, converged: bool) -> int:
+def generate_label(v_min: float, converged: bool, add_noise: bool = True) -> int:
     """
     Generate binary blackout label for a single timestep.
 
     Parameters
     ----------
-    v_min      : float  Minimum bus voltage this timestep (pu)
+    v_min      : float  Minimum bus voltage this timestep (pu) or v_min_measured
     converged  : bool   Did the load flow converge?
+    add_noise  : bool   Unused (kept for API compatibility) - noise applied before this call
 
     Returns
     -------
     int
         1 → blackout (voltage violation or non-convergence)
         0 → normal operation
+    
+    Notes
+    -----
+    Measurement noise is applied BEFORE this function (in digital_twin.py).
+    This ensures noise is deterministic per sample and baked into the dataset,
+    not re-sampled on every function call.
     """
     # Non-convergence is always a blackout (system collapsed)
     if not converged:
         return 1
 
-    # Voltage below operational threshold
+    # Voltage below operational threshold (v_min already includes measurement noise)
     if v_min < V_BLACKOUT_THRESHOLD:
         return 1
 
