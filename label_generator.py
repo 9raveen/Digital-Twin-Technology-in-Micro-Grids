@@ -45,7 +45,6 @@ V_CRITICAL  = 0.92
 V_HIGH      = 0.93
 V_MODERATE  = 0.94
 
-
 # ── Label Generation ──────────────────────────────────────────────────────────
 
 def generate_label(v_min: float, converged: bool, add_noise: bool = True) -> int:

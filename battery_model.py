@@ -276,7 +276,6 @@ class BatteryModel:
 
 
 # ── Quick test ────────────────────────────────────────────────────────────────
-
 if __name__ == '__main__':
     import pandas as pd
 
