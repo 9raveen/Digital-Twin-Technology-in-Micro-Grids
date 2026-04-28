@@ -150,9 +150,12 @@ def run_simulation() -> pd.DataFrame:
         # AC load flow
         lf = run_load_flow(net, p_load, p_solar)
 
-        # Label generation
-        label    = generate_label(lf['v_min'], lf['converged'])
-        severity = get_severity(lf['v_min'], lf['converged'])
+        # Add realistic voltage measurement noise to break deterministic relationships
+        v_min_measured = lf['v_min'] + np.random.normal(0, 0.007)  # ±0.7% sensor error
+        
+        # Label generation (uses noisy measurement, not ideal voltage)
+        label    = generate_label(v_min_measured, lf['converged'])
+        severity = get_severity(lf['v_min'], lf['converged'])  # severity uses ideal voltage for reference
         margin   = get_blackout_margin(lf['v_min'])
 
         # Derived time features
@@ -175,6 +178,7 @@ def run_simulation() -> pd.DataFrame:
             'soc':              soc,
             # ── Grid (from load flow) ──────────────────────────────
             'v_min':            lf['v_min'],
+            'v_min_measured':   v_min_measured,  # with measurement noise
             'v_max':            lf['v_max'],
             'v_mean':           lf['v_mean'],
             'line_loading_max': lf['line_loading_max'],
