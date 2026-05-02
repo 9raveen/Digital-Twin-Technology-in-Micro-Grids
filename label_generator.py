@@ -47,6 +47,32 @@ V_MODERATE  = 0.94
 
 # ── Label Generation ──────────────────────────────────────────────────────────
 
+def compute_risk_score(v_min: float, converged: bool) -> float:
+    """
+    Compute smooth risk score using sigmoid function.
+
+    Returns value in [0, 1] representing blackout probability:
+    - 0 → safe operation
+    - 1 → imminent blackout (non-convergence or critical voltage)
+
+    Parameters
+    ----------
+    v_min      : float  Minimum bus voltage (pu)
+    converged  : bool   Did the load flow converge?
+
+    Returns
+    -------
+    float
+        Risk score in [0, 1]
+    """
+    if not converged:
+        return 1.0
+
+    # Sigmoid-based smooth risk: k controls steepness at threshold
+    k = 60
+    return 1.0 / (1.0 + np.exp(k * (v_min - 0.93)))
+
+
 def generate_label(v_min: float, converged: bool, add_noise: bool = True) -> int:
     """
     Generate binary blackout label for a single timestep.
@@ -62,7 +88,7 @@ def generate_label(v_min: float, converged: bool, add_noise: bool = True) -> int
     int
         1 → blackout (voltage violation or non-convergence)
         0 → normal operation
-    
+
     Notes
     -----
     Measurement noise is applied BEFORE this function (in digital_twin.py).
@@ -78,6 +104,27 @@ def generate_label(v_min: float, converged: bool, add_noise: bool = True) -> int
         return 1
 
     return 0
+
+
+def generate_label_with_risk(v_min: float, converged: bool) -> tuple:
+    """
+    Generate both binary blackout label and risk score.
+
+    Returns tuple (blackout, risk_score) for dual-target training.
+
+    Parameters
+    ----------
+    v_min      : float  Minimum bus voltage (pu)
+    converged  : bool   Did the load flow converge?
+
+    Returns
+    -------
+    tuple
+        (blackout: int, risk_score: float)
+    """
+    blackout = generate_label(v_min, converged)
+    risk = compute_risk_score(v_min, converged)
+    return blackout, risk
 
 
 def get_severity(v_min: float, converged: bool) -> str:

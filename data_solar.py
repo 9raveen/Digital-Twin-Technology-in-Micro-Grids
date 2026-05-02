@@ -194,6 +194,190 @@ def validate_solar_series(series: pd.Series,
     )
 
 
+# ── Window Extraction & Perturbation Functions ─────────────────────────────────
+
+def extract_solar_windows(
+    raw_solar_series: pd.Series,
+    n_windows: int = 50,
+    window_size_hours: int = 720,
+    strategy: str = 'uniform'
+) -> list:
+    """
+    Extract N independent 720-hour windows from raw solar data.
+
+    Uses systematic sampling to ensure non-overlapping windows and maximum
+    temporal coverage. Wraps around at end of data.
+
+    Parameters
+    ----------
+    raw_solar_series : pd.Series
+        Full hourly solar series (e.g., 8760 hours = 1 year)
+    n_windows : int
+        Number of windows to extract (default 50)
+    window_size_hours : int
+        Length of each window in hours (default 720 = 30 days)
+    strategy : str
+        'uniform': evenly spaced, 'random': random offsets
+
+    Returns
+    -------
+    list of pd.Series
+        N independent solar windows, each of length window_size_hours
+    """
+    available_hours = len(raw_solar_series)
+
+    if window_size_hours > available_hours:
+        raise ValueError(f"Window size {window_size_hours}h exceeds data length {available_hours}h")
+
+    windows = []
+
+    if strategy == 'uniform':
+        # Evenly spaced windows
+        step_size = (available_hours - window_size_hours) / max(n_windows - 1, 1)
+
+        for i in range(n_windows):
+            start_idx = int(i * step_size)
+            end_idx = start_idx + window_size_hours
+            window = raw_solar_series.iloc[start_idx:end_idx].reset_index(drop=True)
+            windows.append(window)
+
+    else:  # random
+        # Randomly offset windows (reproducible with seed)
+        for i in range(n_windows):
+            start_idx = np.random.randint(0, max(available_hours - window_size_hours + 1, 1))
+            end_idx = start_idx + window_size_hours
+            window = raw_solar_series.iloc[start_idx:end_idx].reset_index(drop=True)
+            windows.append(window)
+
+    return windows
+
+
+def add_cloud_intermittency(
+    series: pd.Series,
+    intermittency_factor: float = 0.1,
+    seed: int = None
+) -> pd.Series:
+    """
+    Simulate cloud transients with rapid solar fluctuations.
+
+    Creates realistic cloud-induced variability by adding fast oscillations
+    during daylight hours only.
+
+    Parameters
+    ----------
+    series : pd.Series
+        Solar series in MW
+    intermittency_factor : float
+        Strength of intermittency (0 = none, 0.3 = high clouds)
+    seed : int
+        Random seed for reproducibility
+
+    Returns
+    -------
+    pd.Series
+        Solar series with cloud-induced variability
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
+    if intermittency_factor == 0:
+        return series.copy()
+
+    cloudy = series.copy()
+
+    # Only add clouds during active solar hours (> 0.01 MW)
+    is_daylight = series > 0.01
+
+    # Add high-frequency noise (cloud transients)
+    noise = np.random.normal(0, 1, len(series)) * series * intermittency_factor * 0.5
+
+    cloudy[is_daylight] = cloudy[is_daylight] + noise[is_daylight]
+
+    # Clip to valid range
+    cloudy = np.clip(cloudy, 0, PV_CAPACITY_MW)
+
+    return pd.Series(cloudy, index=series.index)
+
+
+def scale_solar_capacity(
+    series: pd.Series,
+    scaling_factor: float,
+    max_capacity_mw: float = PV_CAPACITY_MW
+) -> pd.Series:
+    """
+    Scale solar generation by constant factor (simulate different PV capacity).
+
+    Parameters
+    ----------
+    series : pd.Series
+        Solar series in MW
+    scaling_factor : float
+        Multiplier (e.g., 0.5 = half capacity, 1.2 = 20% oversized)
+    max_capacity_mw : float
+        Maximum allowed capacity after scaling
+
+    Returns
+    -------
+    pd.Series
+        Scaled solar series, clipped to valid range
+    """
+    scaled = series * scaling_factor
+    scaled = np.clip(scaled, 0, max_capacity_mw)
+    return pd.Series(scaled, index=series.index)
+
+
+def inject_solar_dips(
+    series: pd.Series,
+    dip_count: int = 2,
+    dip_magnitude: float = 0.3,
+    dip_duration_hours: int = 2,
+    seed: int = None
+) -> pd.Series:
+    """
+    Inject artificial solar drops (cloud shadows) into solar series.
+
+    Parameters
+    ----------
+    series : pd.Series
+        Solar series in MW
+    dip_count : int
+        Number of solar dips to inject
+    dip_magnitude : float
+        Reduction factor during dip (e.g., 0.3 = drop to 30% of normal)
+    dip_duration_hours : int
+        Duration of each dip in hours
+    seed : int
+        Random seed for reproducibility
+
+    Returns
+    -------
+    pd.Series
+        Solar series with injected dips
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
+    if dip_count == 0:
+        return series.copy()
+
+    dipped = series.copy()
+    n_hours = len(series)
+
+    for _ in range(dip_count):
+        # Random dip start time (prefer daylight hours)
+        start_idx = np.random.randint(0, max(n_hours - dip_duration_hours, 1))
+        end_idx = min(start_idx + dip_duration_hours, n_hours)
+
+        # Only apply dip if there's actual generation
+        if dipped.iloc[start_idx:end_idx].max() > 0.01:
+            dipped.iloc[start_idx:end_idx] *= dip_magnitude
+
+    # Clip to valid range
+    dipped = np.clip(dipped, 0, PV_CAPACITY_MW)
+
+    return pd.Series(dipped, index=series.index)
+
+
 # ── Save ──────────────────────────────────────────────────────────────────────
 
 def save_solar(series: pd.Series, out_path: str) -> None:

@@ -156,12 +156,182 @@ def validate_load_series(series: pd.Series) -> None:
     )
 
 
+# ── Window Extraction & Perturbation Functions ─────────────────────────────────
+
+def extract_load_windows(
+    raw_load_series: pd.Series,
+    n_windows: int = 50,
+    window_size_hours: int = 720,
+    strategy: str = 'uniform'
+) -> list:
+    """
+    Extract N independent 720-hour windows from raw load data.
+
+    Uses systematic sampling to ensure non-overlapping windows and maximum
+    temporal coverage. Wraps around at end of data.
+
+    Parameters
+    ----------
+    raw_load_series : pd.Series
+        Full hourly load series (e.g., 8760 hours = 1 year)
+    n_windows : int
+        Number of windows to extract (default 50)
+    window_size_hours : int
+        Length of each window in hours (default 720 = 30 days)
+    strategy : str
+        'uniform': evenly spaced, 'random': random offsets
+
+    Returns
+    -------
+    list of pd.Series
+        N independent load windows, each of length window_size_hours
+    """
+    available_hours = len(raw_load_series)
+
+    if window_size_hours > available_hours:
+        raise ValueError(f"Window size {window_size_hours}h exceeds data length {available_hours}h")
+
+    windows = []
+
+    if strategy == 'uniform':
+        # Evenly spaced windows
+        step_size = (available_hours - window_size_hours) / max(n_windows - 1, 1)
+
+        for i in range(n_windows):
+            start_idx = int(i * step_size)
+            end_idx = start_idx + window_size_hours
+            window = raw_load_series.iloc[start_idx:end_idx].reset_index(drop=True)
+            windows.append(window)
+
+    else:  # random
+        # Randomly offset windows (reproducible with seed)
+        for i in range(n_windows):
+            start_idx = np.random.randint(0, max(available_hours - window_size_hours + 1, 1))
+            end_idx = start_idx + window_size_hours
+            window = raw_load_series.iloc[start_idx:end_idx].reset_index(drop=True)
+            windows.append(window)
+
+    return windows
+
+
+def add_stochastic_noise(
+    series: pd.Series,
+    noise_std: float = 0.02,
+    seed: int = None
+) -> pd.Series:
+    """
+    Add realistic Gaussian noise to load series.
+
+    Simulates meter/forecast error and measurement uncertainty.
+
+    Parameters
+    ----------
+    series : pd.Series
+        Load series in MW
+    noise_std : float
+        Standard deviation of noise as fraction of local value (default 0.02 = ±2%)
+    seed : int
+        Random seed for reproducibility
+
+    Returns
+    -------
+    pd.Series
+        Perturbed load series with same mean
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
+    # Noise proportional to load magnitude (realistic)
+    noise = np.random.normal(0, 1, len(series)) * series * noise_std
+    noisy_series = series + noise
+
+    # Clip to valid range [0, IEEE33_BASE_LOAD_MW]
+    noisy_series = np.clip(noisy_series, 0, IEEE33_BASE_LOAD_MW + 1e-6)
+
+    return pd.Series(noisy_series, index=series.index)
+
+
+def scale_load_series(
+    series: pd.Series,
+    scaling_factor: float
+) -> pd.Series:
+    """
+    Scale load series by constant factor while preserving daily pattern.
+
+    Parameters
+    ----------
+    series : pd.Series
+        Load series in MW
+    scaling_factor : float
+        Multiplier (e.g., 1.2 = 20% increase)
+
+    Returns
+    -------
+    pd.Series
+        Scaled series, clipped to valid range
+    """
+    scaled = series * scaling_factor
+    scaled = np.clip(scaled, 0, IEEE33_BASE_LOAD_MW + 1e-6)
+    return pd.Series(scaled, index=series.index)
+
+
+def inject_load_spikes(
+    series: pd.Series,
+    spike_count: int = 2,
+    spike_magnitude: float = 1.5,
+    spike_duration_hours: int = 2,
+    seed: int = None
+) -> pd.Series:
+    """
+    Inject artificial demand spikes into load series.
+
+    Parameters
+    ----------
+    series : pd.Series
+        Load series in MW
+    spike_count : int
+        Number of spikes to inject
+    spike_magnitude : float
+        Multiplier during spike (e.g., 1.5 = 50% increase)
+    spike_duration_hours : int
+        Duration of each spike in hours
+    seed : int
+        Random seed for reproducibility
+
+    Returns
+    -------
+    pd.Series
+        Load series with injected spikes
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
+    if spike_count == 0:
+        return series.copy()
+
+    spiked = series.copy()
+    n_hours = len(series)
+
+    for _ in range(spike_count):
+        # Random spike start time
+        start_idx = np.random.randint(0, max(n_hours - spike_duration_hours, 1))
+        end_idx = min(start_idx + spike_duration_hours, n_hours)
+
+        # Apply spike (multiplicative)
+        spiked.iloc[start_idx:end_idx] *= spike_magnitude
+
+    # Clip to valid range
+    spiked = np.clip(spiked, 0, IEEE33_BASE_LOAD_MW + 1e-6)
+
+    return pd.Series(spiked, index=series.index)
+
+
 # ── Quick test ────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
     import sys
 
-    path   = sys.argv[1] if len(sys.argv) > 1 else r'datasets\electricityloaddiagrams20112014\LD2011_2014.txt'
+    path   = sys.argv[1] if len(sys.argv) > 1 else r'datasets\LD2011_2014.txt'
     n_days = int(sys.argv[2]) if len(sys.argv) > 2 else 30
 
     print(f"Loading data from: {path}")

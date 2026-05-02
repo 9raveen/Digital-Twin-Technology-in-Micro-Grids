@@ -1,0 +1,126 @@
+{
+  "best_model": "XGBClassifier",
+  "feature_names": [
+    "p_load_mw",
+    "p_solar_mw",
+    "soc",
+    "line_loading_max",
+    "p_grid_mw",
+    "p_load_lag_1",
+    "p_load_lag_2",
+    "p_load_lag_3",
+    "p_solar_lag_1",
+    "p_solar_lag_2",
+    "p_solar_lag_3"
+  ],
+  "validation": {
+    "RandomForestClassifier": {
+      "roc_auc": 0.9704336732493034,
+      "pr_auc": 0.940403392216979,
+      "accuracy": 0.9065837717200701,
+      "balanced_accuracy": 0.9149147837565028,
+      "precision": 0.8293665324057122,
+      "recall": 0.949685534591195,
+      "f1": 0.8854573885848319,
+      "brier": 0.06772266649741913,
+      "confusion_matrix": [
+        [
+          3422,
+          466
+        ],
+        [
+          120,
+          2265
+        ]
+      ],
+      "classification_report": "              precision    recall  f1-score   support\n\n      Normal       0.97      0.88      0.92      3888\n    Blackout       0.83      0.95      0.89      2385\n\n    accuracy                           0.91      6273\n   macro avg       0.90      0.91      0.90      6273\nweighted avg       0.91      0.91      0.91      6273\n"
+    },
+    "GradientBoostingClassifier": {
+      "roc_auc": 0.9703080380636868,
+      "pr_auc": 0.9385687811709721,
+      "accuracy": 0.9037143312609597,
+      "balanced_accuracy": 0.9117084983306157,
+      "precision": 0.8265493215988265,
+      "recall": 0.9450733752620545,
+      "f1": 0.8818466353677621,
+      "brier": 0.06754978086372909,
+      "confusion_matrix": [
+        [
+          3415,
+          473
+        ],
+        [
+          131,
+          2254
+        ]
+      ],
+      "classification_report": "              precision    recall  f1-score   support\n\n      Normal       0.96      0.88      0.92      3888\n    Blackout       0.83      0.95      0.88      2385\n\n    accuracy                           0.90      6273\n   macro avg       0.89      0.91      0.90      6273\nweighted avg       0.91      0.90      0.90      6273\n"
+    },
+    "LogisticRegression": {
+      "roc_auc": 0.9694811105071994,
+      "pr_auc": 0.9403116849009105,
+      "accuracy": 0.9030766778256017,
+      "balanced_accuracy": 0.9092490682506406,
+      "precision": 0.8311591502049944,
+      "recall": 0.9350104821802935,
+      "f1": 0.8800315706393055,
+      "brier": 0.06896584397078626,
+      "confusion_matrix": [
+        [
+          3435,
+          453
+        ],
+        [
+          155,
+          2230
+        ]
+      ],
+      "classification_report": "              precision    recall  f1-score   support\n\n      Normal       0.96      0.88      0.92      3888\n    Blackout       0.83      0.94      0.88      2385\n\n    accuracy                           0.90      6273\n   macro avg       0.89      0.91      0.90      6273\nweighted avg       0.91      0.90      0.90      6273\n"
+    },
+    "XGBClassifier": {
+      "roc_auc": 0.9711123728550353,
+      "pr_auc": 0.9405243286086997,
+      "accuracy": 0.9076996652319465,
+      "balanced_accuracy": 0.9146803905582732,
+      "precision": 0.8349406528189911,
+      "recall": 0.9438155136268344,
+      "f1": 0.8860460539263925,
+      "brier": 0.0661274641752243,
+      "confusion_matrix": [
+        [
+          3443,
+          445
+        ],
+        [
+          134,
+          2251
+        ]
+      ],
+      "classification_report": "              precision    recall  f1-score   support\n\n      Normal       0.96      0.89      0.92      3888\n    Blackout       0.83      0.94      0.89      2385\n\n    accuracy                           0.91      6273\n   macro avg       0.90      0.91      0.90      6273\nweighted avg       0.91      0.91      0.91      6273\n"
+    }
+  },
+  "test": {
+    "roc_auc": 0.9761943534709906,
+    "pr_auc": 0.9574679051802252,
+    "accuracy": 0.9171815997253691,
+    "balanced_accuracy": 0.9232853526939568,
+    "precision": 0.8506375227686703,
+    "recall": 0.9487584650112867,
+    "f1": 0.8970227296980045,
+    "brier": 0.059571295976638794,
+    "confusion_matrix": [
+      [
+        6484,
+        738
+      ],
+      [
+        227,
+        4203
+      ]
+    ],
+    "classification_report": "              precision    recall  f1-score   support\n\n      Normal       0.97      0.90      0.93      7222\n    Blackout       0.85      0.95      0.90      4430\n\n    accuracy                           0.92     11652\n   macro avg       0.91      0.92      0.91     11652\nweighted avg       0.92      0.92      0.92     11652\n"
+  },
+  "input_dir": "datasets\\generated",
+  "output_dir": "outputs\\model",
+  "target": "blackout"
+}
