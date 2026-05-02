@@ -13,7 +13,7 @@ from grid_simulator import create_network, run_load_flow
 # Load data
 # ─────────────────────────────────────────────────────────────
 load = prepare_load_series(
-    'datasets/electricityloaddiagrams20112014/LD2011_2014.txt',
+    'datasets/LD2011_2014.txt',
     n_days=30
 )
 

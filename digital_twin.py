@@ -28,9 +28,13 @@ import time
 import numpy as np
 import pandas as pd
 
+from config import (
+    DAY_START_HOUR, DAY_END_HOUR,
+    SIMULATION_HOURS, DISPLAY_PROGRESS_INTERVAL
+)
 from battery_model   import BatteryModel
 from grid_simulator  import create_network, run_load_flow
-from label_generator import generate_label, get_severity, get_blackout_margin
+from label_generator import generate_label, generate_label_with_risk, get_severity, get_blackout_margin
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -86,7 +90,7 @@ def print_progress(t: int, total: int, record: dict, interval: int = 72) -> None
 
 # ── Main Simulation Loop ──────────────────────────────────────────────────────
 
-def run_simulation() -> pd.DataFrame:
+def run_simulation(use_zip: bool = True) -> pd.DataFrame:
     """
     Run the full 30-day Digital Twin simulation.
 
@@ -98,6 +102,11 @@ def run_simulation() -> pd.DataFrame:
       5. Generate blackout label and severity
       6. Record all values
 
+    Parameters
+    ----------
+    use_zip : bool
+        Enable voltage-dependent ZIP load modeling (default: True)
+
     Returns
     -------
     pd.DataFrame
@@ -105,7 +114,8 @@ def run_simulation() -> pd.DataFrame:
     """
 
     print("\n" + "=" * 60)
-    print("  Digital Twin — Microgrid Simulation")
+    load_model_str = "ZIP (Voltage-Dependent)" if use_zip else "Constant Power"
+    print(f"  Digital Twin — Microgrid Simulation ({load_model_str})")
     print("=" * 60)
 
     # ── Load inputs ───────────────────────────────────────────────
@@ -123,78 +133,131 @@ def run_simulation() -> pd.DataFrame:
         charge_rate    = 0.25,
         discharge_rate = 0.25,
         efficiency     = 0.95,
+        use_crate_efficiency = True,    # LEVEL 1: C-rate efficiency
+        use_ramp_limits = True,         # LEVEL 1: Ramp rate limits
+        use_voltage_control = True,     # LEVEL 2: Voltage-responsive
+        use_degradation = True,         # LEVEL 3: Cycle degradation
+        use_headroom_awareness = True,  # STRATEGY 1: Headroom awareness
+        use_fullness_penalty = True,    # STRATEGY 2: Fullness penalty
+        use_degradation_aware = True,   # STRATEGY 3: Degradation-aware control
+        use_foresight = True,           # STRATEGY 4: Simple foresight
+        use_grid_constraint = True,     # STRATEGY 5: Grid import constraint
+        grid_import_limit = 5.0,        # Max grid import (MW)
     )
     battery.summary()
 
-    net = create_network()
+    net = create_network(use_zip=use_zip)
     print(f"\n  Network : {len(net.bus)} buses | "
           f"{len(net.load)} loads | "
           f"{len(net.line)} lines")
+    print(f"  Load Model: {'ZIP (30%Z, 30%I, 40%P)' if use_zip else 'Constant Power'}")
 
     # ── Simulation loop ───────────────────────────────────────────
     print(f"\n[3/4] Running simulation ({T} timesteps)...\n")
     t_start = time.time()
 
-    records = []
+    # Pre-allocate dictionaries of lists (faster than repeated append)
+    records = {
+        'timestep': [], 'day': [], 'hour_of_day': [], 'is_night': [],
+        'p_load_mw': [], 'p_solar_mw': [], 'p_battery_mw': [], 'p_grid_mw': [],
+        'soc': [],
+        'v_min': [], 'v_min_measured': [], 'v_max': [], 'v_mean': [],
+        'line_loading_max': [], 'p_loss_mw': [], 'converged': [],
+        'v_margin': [], 'severity': [], 'blackout': [], 'risk_score': []
+    }
 
     for t in range(T):
         p_load  = float(p_load_series.iloc[t])
         p_solar = float(p_solar_series.iloc[t])
 
-        # Battery dispatch
-        p_battery, soc = battery.step(p_load, p_solar)
+        # ── STEP 1: Preliminary load flow to get real grid voltage ────────────
+        # Semi-implicit: battery sees voltage without its own discharge
+        lf_init = run_load_flow(net, p_load, p_solar, p_battery_mw=0.0)
+        v_min_grid = lf_init['v_min']
+
+        # ── STEP 2: Set future load/solar forecasts for foresight ────────────
+        # Look 6 hours ahead (or to end of series)
+        look_ahead = min(t + 6, T)
+        future_load = float(np.mean(p_load_series.iloc[t:look_ahead]))
+        future_solar = float(np.mean(p_solar_series.iloc[t:look_ahead]))
+
+        battery.future_load_forecast = future_load
+        battery.future_solar_forecast = future_solar
+
+        # ── STEP 2b: Dynamic SOC Target ────────────────────────────────────
+        # If deficit predicted, raise target (prepare to discharge)
+        # If surplus predicted, lower target (prepare to charge)
+        future_deficit = future_load - future_solar
+        if future_deficit > 0.5:
+            # Large deficit ahead → raise target SOC to 0.75 (prepare to supply load)
+            battery.target_soc = 0.75
+        elif future_deficit < -0.5:
+            # Large surplus ahead → lower target SOC to 0.45 (prepare to absorb solar)
+            battery.target_soc = 0.45
+        else:
+            # Normal → maintain default 0.6
+            battery.target_soc = 0.6
+
+        # ── STEP 3: Battery makes decision with real grid voltage ────────────
+        p_battery, soc = battery.step(p_load, p_solar, v_min=v_min_grid)
+
+        # ── STEP 4: Final load flow with battery power ──────────────────────
+        lf = run_load_flow(net, p_load, p_solar, p_battery_mw=p_battery)
 
         # Grid residual — what the main grid must supply
         p_grid = p_load - p_solar - p_battery
 
-        # AC load flow
-        lf = run_load_flow(net, p_load, p_solar)
-
         # Add realistic voltage measurement noise to break deterministic relationships
         v_min_measured = lf['v_min'] + np.random.normal(0, 0.007)  # ±0.7% sensor error
-        
+
         # Label generation (uses noisy measurement, not ideal voltage)
-        label    = generate_label(v_min_measured, lf['converged'])
+        label, risk = generate_label_with_risk(v_min_measured, lf['converged'])
         severity = get_severity(lf['v_min'], lf['converged'])  # severity uses ideal voltage for reference
         margin   = get_blackout_margin(lf['v_min'])
 
-        # Derived time features
+        # Derived time features (using config parameters)
         hour_of_day = t % 24
         day         = t // 24
-        is_night    = int(hour_of_day < 6 or hour_of_day >= 20)
+        is_night    = int(hour_of_day < DAY_START_HOUR or hour_of_day >= DAY_END_HOUR)
 
-        record = {
-            # ── Time ──────────────────────────────────────────────
-            'timestep':         t,
-            'day':              day,
-            'hour_of_day':      hour_of_day,
-            'is_night':         is_night,
-            # ── Power balance ──────────────────────────────────────
-            'p_load_mw':        p_load,
-            'p_solar_mw':       p_solar,
-            'p_battery_mw':     p_battery,
-            'p_grid_mw':        p_grid,
-            # ── Battery ────────────────────────────────────────────
-            'soc':              soc,
-            # ── Grid (from load flow) ──────────────────────────────
-            'v_min':            lf['v_min'],
-            'v_min_measured':   v_min_measured,  # with measurement noise
-            'v_max':            lf['v_max'],
-            'v_mean':           lf['v_mean'],
-            'line_loading_max': lf['line_loading_max'],
-            'p_loss_mw':        lf['p_loss_mw'],
-            'converged':        int(lf['converged']),
-            # ── Labels ─────────────────────────────────────────────
-            'v_margin':         margin,
-            'severity':         severity,
-            'blackout':         label,
-        }
+        # ── Append to pre-allocated dictionaries (O(1) operation) ────────────
+        records['timestep'].append(t)
+        records['day'].append(day)
+        records['hour_of_day'].append(hour_of_day)
+        records['is_night'].append(is_night)
+        records['p_load_mw'].append(p_load)
+        records['p_solar_mw'].append(p_solar)
+        records['p_battery_mw'].append(p_battery)
+        records['p_grid_mw'].append(p_grid)
+        records['soc'].append(soc)
+        records['v_min'].append(lf['v_min'])
+        records['v_min_measured'].append(v_min_measured)
+        records['v_max'].append(lf['v_max'])
+        records['v_mean'].append(lf['v_mean'])
+        records['line_loading_max'].append(lf['line_loading_max'])
+        records['p_loss_mw'].append(lf['p_loss_mw'])
+        records['converged'].append(int(lf['converged']))
+        records['v_margin'].append(margin)
+        records['severity'].append(severity)
+        records['blackout'].append(label)
+        records['risk_score'].append(risk)
 
-        records.append(record)
-        print_progress(t, T, record, interval=72)
-        
-    # ── Build DataFrame ───────────────────────────────────────────
+        print_progress(t, T, {
+            'p_load_mw': p_load, 'p_solar_mw': p_solar, 'soc': soc,
+            'v_min': lf['v_min'], 'blackout': label
+        }, interval=72)
+
+    # ── Build DataFrame (from pre-allocated dicts) ─────────────────────────
     df = pd.DataFrame(records)
+
+    # ── Add temporal lag features ──────────────────────────────────
+    # Lags help ML model capture temporal patterns in load and solar
+    for lag in range(1, 4):
+        df[f'p_load_lag_{lag}'] = df['p_load_mw'].shift(lag)
+        df[f'p_solar_lag_{lag}'] = df['p_solar_mw'].shift(lag)
+
+    # Remove rows with NaN from lag creation
+    df = df.dropna()
 
     elapsed = time.time() - t_start
     print(f"\n  Simulation complete in {elapsed:.1f}s")

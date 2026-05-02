@@ -1,24 +1,31 @@
 """
 ml_model.py
 ===========
-ML-based probabilistic blackout prediction for the Digital Twin Microgrid.
+ML-based probabilistic blackout risk prediction for the Digital Twin Microgrid.
 
-Trains three classifiers on the simulation dataset and evaluates them:
-  - Random Forest      (handles non-linearity, feature importance)
-  - Gradient Boosting  (strong sequential learner)
-  - Logistic Regression (linear baseline)
+Trains regression models on the simulation dataset and evaluates them:
+  - Random Forest Regressor      (handles non-linearity, feature importance)
+  - Gradient Boosting Regressor  (strong sequential learner)
+  - XGBoost Regressor            (optimized gradient boosting)
+  - Ridge Regression             (linear baseline)
 
-Input  : datasets/processed/simulation_results.csv  (720 rows x 18 cols)
+Predicts continuous risk scores [0, 1], then converts to binary blackout at 0.5 threshold.
+
+Input  : datasets/processed/simulation_results.csv  (720 rows)
 Output : outputs/model/best_model.pkl
          outputs/model/scaler.pkl
          outputs/model/feature_names.pkl
 
-Features used (3 — physical observables only):
-  p_load_mw, p_solar_mw, soc
+Target: risk_score (continuous, [0, 1] - smooth blackout probability)
 
-Dropped time features:
-  hour_of_day, is_night → removed to prevent temporal pattern memorisation
-  The model must learn physical load/solar/battery relationships, not clock patterns
+Features used (11 — physical observables + temporal lags):
+  Current: p_load_mw, p_solar_mw, soc, line_loading_max, p_grid_mw
+  Lags: p_load_lag_1/2/3, p_solar_lag_1/2/3
+
+Removed features (to prevent data leakage):
+  v_min — directly determines the label, causes information leakage
+  hour_of_day, is_night — removed to prevent temporal pattern memorisation
+  The model must learn physical load/solar/battery relationships, not voltage
 
 Train/test split — TEMPORAL (not random):
   Train : days  0–24  (600 hours)
@@ -33,15 +40,22 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 
-from sklearn.ensemble        import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.linear_model    import LogisticRegression
+from sklearn.ensemble        import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.linear_model    import Ridge
 from sklearn.preprocessing   import StandardScaler
 from sklearn.model_selection import TimeSeriesSplit, cross_val_score
 from sklearn.metrics         import (
+    mean_absolute_error, mean_squared_error, r2_score,
     classification_report, confusion_matrix,
     roc_auc_score, average_precision_score,
     brier_score_loss, roc_curve, precision_recall_curve, f1_score,
 )
+
+try:
+    from xgboost import XGBRegressor
+    XGBOOST_AVAILABLE = True
+except ImportError:
+    XGBOOST_AVAILABLE = False
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -51,14 +65,20 @@ RANDOM_SEED = 42
 TRAIN_DAYS  = 25     # train on first 25 days (days 0–24)
 TEST_BUFFER_HOURS = 0  # gap between train and test (prevents temporal leakage)
 
-# Physical observables only — no time features
+# Physical observables only — no time features, no voltage leakage
 # hour_of_day and is_night removed to prevent temporal memorisation
+# v_min removed to prevent data leakage (it directly determines the label)
+# Includes lag features for temporal context
 FEATURES = [
     'p_load_mw',
     'p_solar_mw',
     'soc',
+    'line_loading_max',
+    'p_grid_mw',
+    'p_load_lag_1', 'p_load_lag_2', 'p_load_lag_3',
+    'p_solar_lag_1', 'p_solar_lag_2', 'p_solar_lag_3',
 ]
-TARGET = 'blackout'
+TARGET = 'risk_score'
 
 
 # ── Data Loading & Preparation ────────────────────────────────────────────────
@@ -80,10 +100,10 @@ def load_and_prepare(path: str) -> tuple:
     df = pd.read_csv(path)
 
     print(f"  Dataset shape  : {df.shape}")
-    print(f"  Blackout rate  : {df[TARGET].mean()*100:.1f}%  "
-          f"({df[TARGET].sum()} blackout / {len(df)} total)")
+    print(f"  Risk score range : [{df[TARGET].min():.4f}, {df[TARGET].max():.4f}]")
+    print(f"  Risk score mean  : {df[TARGET].mean():.4f}")
     print(f"  Features used  : {FEATURES}")
-    
+
     buffer_days = TEST_BUFFER_HOURS // 24
     test_start_day = TRAIN_DAYS + buffer_days
     print(f"  Split type     : TEMPORAL  (train days 0–{TRAIN_DAYS-1}, "
@@ -99,11 +119,9 @@ def load_and_prepare(path: str) -> tuple:
     y_test  = test_df[TARGET].values
 
     print(f"\n  Train : {len(X_train)} hours | "
-          f"{y_train.sum()} blackout / {len(y_train)-y_train.sum()} normal "
-          f"({y_train.mean()*100:.1f}%)")
+          f"Risk mean {y_train.mean():.4f} | Risk range [{y_train.min():.4f}, {y_train.max():.4f}]")
     print(f"  Test  : {len(X_test)} hours | "
-          f"{y_test.sum()} blackout / {len(y_test)-y_test.sum()} normal "
-          f"({y_test.mean()*100:.1f}%)")
+          f"Risk mean {y_test.mean():.4f} | Risk range [{y_test.min():.4f}, {y_test.max():.4f}]")
 
     return X_train, X_test, y_train, y_test, df
 
@@ -111,29 +129,36 @@ def load_and_prepare(path: str) -> tuple:
 # ── Model Definitions ─────────────────────────────────────────────────────────
 
 def get_models() -> dict:
-    return {
-        'RandomForest': RandomForestClassifier(
+    """Get regression models for risk score prediction."""
+    models = {
+        'RandomForestRegressor': RandomForestRegressor(
             n_estimators     = 200,
             max_depth        = 8,
             min_samples_leaf = 5,
-            class_weight     = 'balanced',
             random_state     = RANDOM_SEED,
             n_jobs           = -1,
         ),
-        'GradientBoosting': GradientBoostingClassifier(
+        'GradientBoostingRegressor': GradientBoostingRegressor(
             n_estimators  = 200,
             learning_rate = 0.05,
             max_depth     = 4,
             subsample     = 0.8,
             random_state  = RANDOM_SEED,
         ),
-        'LogisticRegression': LogisticRegression(
-            C            = 1.0,
-            class_weight = 'balanced',
-            max_iter     = 1000,
-            random_state = RANDOM_SEED,
+        'Ridge': Ridge(
+            alpha = 1.0,
         ),
     }
+
+    if XGBOOST_AVAILABLE:
+        models['XGBRegressor'] = XGBRegressor(
+            n_estimators  = 200,
+            max_depth     = 5,
+            learning_rate = 0.05,
+            random_state  = RANDOM_SEED,
+        )
+
+    return models
 
 
 # ── Training & Evaluation ─────────────────────────────────────────────────────
@@ -142,7 +167,9 @@ def train_and_evaluate(
     X_train, X_test, y_train, y_test,
 ) -> tuple:
     """
-    Train all models, evaluate on temporal test set.
+    Train all regression models, evaluate on temporal test set.
+
+    Predicts continuous risk scores, then converts to binary blackout predictions.
 
     Returns
     -------
@@ -154,45 +181,55 @@ def train_and_evaluate(
 
     models  = get_models()
     results = {}
-    
-    # Use TimeSeriesSplit for temporal data (not stratified shuffle)
-    # This respects temporal ordering and prevents information leakage
+
     cv = TimeSeriesSplit(n_splits=3)
 
     for name, model in models.items():
-        X_tr = X_train_s if name == 'LogisticRegression' else X_train
-        X_te = X_test_s  if name == 'LogisticRegression' else X_test
+        X_tr = X_train_s if name == 'Ridge' else X_train
+        X_te = X_test_s  if name == 'Ridge' else X_test
 
-        # Cross-validation on train set with temporal split
-        cv_data   = X_train_s if name == 'LogisticRegression' else X_train
+        # Cross-validation on train set
+        cv_data = X_train_s if name == 'Ridge' else X_train
         cv_scores = cross_val_score(
             model, cv_data, y_train,
-            cv=cv, scoring='roc_auc', n_jobs=-1,
+            cv=cv, scoring='r2', n_jobs=-1,
         )
 
         model.fit(X_tr, y_train)
-        y_pred = model.predict(X_te)
-        y_prob = model.predict_proba(X_te)[:, 1]
+        y_pred_risk = model.predict(X_te)
+
+        # Clip to [0, 1] for probabilistic interpretation
+        y_pred_risk = np.clip(y_pred_risk, 0, 1)
+
+        # Convert to binary blackout prediction (threshold 0.5)
+        y_pred = (y_pred_risk > 0.5).astype(int)
+
+        # Compute regression metrics
+        mae = mean_absolute_error(y_test, y_pred_risk)
+        rmse = np.sqrt(mean_squared_error(y_test, y_pred_risk))
+        r2 = r2_score(y_test, y_pred_risk)
+
+        # Also compute classification metrics for blackout threshold
+        conf_mat = confusion_matrix(y_test > 0.5, y_pred)
 
         results[name] = {
             'model':         model,
+            'y_pred_risk':   y_pred_risk,
             'y_pred':        y_pred,
-            'y_prob':        y_prob,
-            'roc_auc':       roc_auc_score(y_test, y_prob),
-            'avg_precision': average_precision_score(y_test, y_prob),
-            'brier_score':   brier_score_loss(y_test, y_prob),
-            'cv_auc_mean':   cv_scores.mean(),
-            'cv_auc_std':    cv_scores.std(),
-            'conf_matrix':   confusion_matrix(y_test, y_pred),
+            'mae':           mae,
+            'rmse':          rmse,
+            'r2':            r2,
+            'cv_r2_mean':    cv_scores.mean(),
+            'cv_r2_std':     cv_scores.std(),
+            'conf_matrix':   conf_mat,
             'class_report':  classification_report(
-                                 y_test, y_pred,
+                                 y_test > 0.5, y_pred,
                                  target_names=['Normal', 'Blackout']),
-            'f1_blackout':   f1_score(y_test, y_pred),
+            'f1_blackout':   f1_score(y_test > 0.5, y_pred),
         }
 
-    # Select best by F1-score of blackout class
-    # F1 balances precision and recall — better than ROC-AUC for imbalanced data
-    best_name = max(results, key=lambda k: results[k]['f1_blackout'])
+    # Select best by R² score
+    best_name = max(results, key=lambda k: results[k]['r2'])
     return results, scaler, best_name
 
 
@@ -201,21 +238,21 @@ def train_and_evaluate(
 def print_results(results: dict, best_name: str) -> None:
 
     print("\n" + "=" * 60)
-    print("  Model Evaluation Results  (Temporal Split)")
+    print("  Model Evaluation Results  (Risk Score Regression)")
     print("=" * 60)
 
-    print(f"\n  {'Model':<22} | {'ROC-AUC':>7} | {'F1-BO':>6} | "
-          f"{'Brier':>6} | {'CV-AUC':>12}")
-    print("  " + "-" * 65)
+    print(f"\n  {'Model':<25} | {'R² Score':>8} | {'RMSE':>8} | "
+          f"{'MAE':>8} | {'CV-R²':>12}")
+    print("  " + "-" * 70)
 
     for name, r in results.items():
         marker = " <-- BEST" if name == best_name else ""
         print(
-            f"  {name:<22} | "
-            f"{r['roc_auc']:>7.4f} | "
-            f"{r['f1_blackout']:>6.4f} | "
-            f"{r['brier_score']:>6.4f} | "
-            f"{r['cv_auc_mean']:.4f}+/-{r['cv_auc_std']:.4f}"
+            f"  {name:<25} | "
+            f"{r['r2']:>8.4f} | "
+            f"{r['rmse']:>8.4f} | "
+            f"{r['mae']:>8.4f} | "
+            f"{r['cv_r2_mean']:.4f}+/-{r['cv_r2_std']:.4f}"
             f"{marker}"
         )
 
@@ -223,7 +260,13 @@ def print_results(results: dict, best_name: str) -> None:
     print(f"  Best Model: {best_name}")
     print(f"{'='*60}")
     r = results[best_name]
-    print(f"\n  Classification Report:")
+    print(f"\n  Risk Score Regression Metrics:")
+    print(f"    R² Score (test)  : {r['r2']:.4f}")
+    print(f"    RMSE             : {r['rmse']:.4f}")
+    print(f"    MAE              : {r['mae']:.4f}")
+    print(f"    CV R² (mean±std) : {r['cv_r2_mean']:.4f}±{r['cv_r2_std']:.4f}")
+
+    print(f"\n  Blackout Classification (threshold=0.5):")
     print(r['class_report'])
 
     cm = r['conf_matrix']
@@ -246,24 +289,22 @@ def get_feature_importance(results: dict, best_name: str) -> pd.DataFrame:
     model = results[best_name]['model']
 
     if hasattr(model, 'feature_importances_'):
-        importances = model.feature_importances_
+        importance = model.feature_importances_
     elif hasattr(model, 'coef_'):
-        importances = np.abs(model.coef_[0])
-        importances = importances / importances.sum()
+        importance = np.abs(model.coef_)
+        importance = importance / importance.max()
     else:
         return None
 
-    df_imp = pd.DataFrame({
-        'feature':    FEATURES,
-        'importance': importances,
-    }).sort_values('importance', ascending=False).reset_index(drop=True)
-
+    features = FEATURES
     print(f"\n  Feature Importances ({best_name}):")
-    for _, row in df_imp.iterrows():
-        bar = '*' * int(row['importance'] * 50)
-        print(f"  {row['feature']:<20} {row['importance']:.4f}  {bar}")
+    for f, imp in zip(features, importance):
+        print(f"  {f:20s} {imp:.4f}")
 
-    return df_imp
+    return pd.DataFrame({
+        'feature': features,
+        'importance': importance,
+    }).sort_values('importance', ascending=False).reset_index(drop=True)
 
 
 # ── Visualisation ─────────────────────────────────────────────────────────────
@@ -279,39 +320,37 @@ def plot_results(
     gs  = gridspec.GridSpec(2, 3, figure=fig, hspace=0.35, wspace=0.35)
 
     colors = {
-        'RandomForest':       'steelblue',
-        'GradientBoosting':   'darkorange',
-        'LogisticRegression': 'seagreen',
+        'RandomForestRegressor':       'steelblue',
+        'GradientBoostingRegressor':   'darkorange',
+        'Ridge': 'seagreen',
+        'XGBRegressor': 'purple'
     }
 
-    # ── ROC Curves ────────────────────────────────────────────────
+    # ── Risk Score Predictions vs Actuals ─────────────────────────
     ax1 = fig.add_subplot(gs[0, 0])
     for name, r in results.items():
-        fpr, tpr, _ = roc_curve(y_test, r['y_prob'])
-        ax1.plot(fpr, tpr, color=colors[name], linewidth=2,
-                 label=f"{name[:8]}  AUC={r['roc_auc']:.3f}")
-    ax1.plot([0,1],[0,1], 'k--', linewidth=1, label='Random')
-    ax1.set_title('ROC Curves', fontsize=12, fontweight='bold')
-    ax1.set_xlabel('False Positive Rate')
-    ax1.set_ylabel('True Positive Rate')
+        ax1.scatter(y_test, r['y_pred_risk'], alpha=0.5,
+                   color=colors.get(name, 'gray'), s=20,
+                   label=f"{name} (R²={r['r2']:.3f})")
+    ax1.plot([0,1], [0,1], 'k--', linewidth=1, label='Perfect')
+    ax1.set_title('Risk Score: Predicted vs Actual', fontsize=12, fontweight='bold')
+    ax1.set_xlabel('Actual Risk Score')
+    ax1.set_ylabel('Predicted Risk Score')
     ax1.legend(fontsize=8)
+    ax1.set_xlim(0, 1)
+    ax1.set_ylim(0, 1)
     ax1.grid(True, alpha=0.3)
 
-    # ── Precision-Recall Curves ───────────────────────────────────
+    # ── Model Comparison ──────────────────────────────────────────
     ax2 = fig.add_subplot(gs[0, 1])
-    for name, r in results.items():
-        prec, rec, _ = precision_recall_curve(y_test, r['y_prob'])
-        ax2.plot(rec, prec, color=colors[name], linewidth=2,
-                 label=f"{name[:8]}  AP={r['avg_precision']:.3f}")
-    ax2.axhline(y_test.mean(), color='k', linestyle='--',
-                linewidth=1, label=f'Baseline={y_test.mean():.3f}')
-    ax2.set_title('Precision-Recall Curves', fontsize=12, fontweight='bold')
-    ax2.set_xlabel('Recall')
-    ax2.set_ylabel('Precision')
-    ax2.legend(fontsize=8)
-    ax2.grid(True, alpha=0.3)
+    model_names = list(results.keys())
+    r2_scores = [results[n]['r2'] for n in model_names]
+    ax2.barh(model_names, r2_scores, color=[colors.get(n, 'gray') for n in model_names])
+    ax2.set_title('Model R² Comparison', fontsize=12, fontweight='bold')
+    ax2.set_xlabel('R² Score')
+    ax2.grid(True, alpha=0.3, axis='x')
 
-    # ── Confusion Matrix ──────────────────────────────────────────
+    # ── Confusion Matrix (blackout threshold) ──────────────────────
     ax3 = fig.add_subplot(gs[0, 2])
     cm = results[best_name]['conf_matrix']
     ax3.imshow(cm, cmap='Blues')
@@ -319,7 +358,7 @@ def plot_results(
     ax3.set_yticks([0,1]); ax3.set_yticklabels(['Normal','Blackout'])
     ax3.set_xlabel('Predicted')
     ax3.set_ylabel('Actual')
-    ax3.set_title(f'Confusion Matrix\n({best_name})',
+    ax3.set_title(f'Blackout Classification\n({best_name})',
                   fontsize=12, fontweight='bold')
     for i in range(2):
         for j in range(2):
@@ -327,21 +366,24 @@ def plot_results(
                      ha='center', va='center', fontsize=16, fontweight='bold',
                      color='white' if cm[i,j] > cm.max()/2 else 'black')
 
-    # ── Blackout Probability over Time ────────────────────────────
+    # ── Risk Score over Time ──────────────────────────────────────
     ax4 = fig.add_subplot(gs[1, :2])
-    y_prob_full = results[best_name]['y_prob']
-    ax4.plot(y_prob_full, color='crimson', linewidth=0.8,
-             alpha=0.8, label='P(Blackout)')
+    y_risk_full = results[best_name]['y_pred_risk']
+    ax4.plot(y_risk_full, color='crimson', linewidth=0.8,
+             alpha=0.8, label='Predicted Risk')
+    ax4.plot(y_test, color='steelblue', linewidth=0.8,
+             alpha=0.5, label='Actual Risk')
     ax4.axhline(0.5, color='grey', linestyle='--',
                 linewidth=1, label='Threshold 0.5')
-    blackout_idx = np.where(y_test == 1)[0]
+    blackout_idx = np.where(y_test > 0.5)[0]
     ax4.scatter(blackout_idx,
                 np.ones(len(blackout_idx)) * 0.02,
                 c='red', s=8, alpha=0.5, label='Actual Blackout')
-    ax4.set_title(f'Predicted Blackout Probability — {best_name} (Test: Days 25–29)',
+    ax4.set_title(f'Risk Score Prediction — {best_name} (Test: Days 25–29)',
                   fontsize=12, fontweight='bold')
     ax4.set_xlabel('Test Timestep (hours)')
-    ax4.set_ylabel('P(Blackout)')
+    ax4.set_ylabel('Risk Score')
+    ax4.set_ylim(-0.1, 1.1)
     ax4.legend(fontsize=9)
     ax4.grid(True, alpha=0.3)
 
@@ -356,7 +398,7 @@ def plot_results(
         ax5.grid(True, alpha=0.3, axis='x')
 
     plt.suptitle(
-        'Digital Twin — Blackout Prediction  '
+        'Digital Twin — Blackout Risk Prediction (Regression)  '
         '(Physical Features Only · Temporal Split)',
         fontsize=13, fontweight='bold', y=1.01,
     )
@@ -370,11 +412,14 @@ def plot_results(
 # ── Reliability Metrics ───────────────────────────────────────────────────────
 
 def compute_reliability_metrics(df: pd.DataFrame) -> None:
-    lolp = df['blackout'].mean()
-    eens = df.loc[df['blackout'] == 1, 'p_load_mw'].sum()
+    """Compute LOLP and EENS from risk scores (threshold > 0.5 for blackout)."""
+    # Convert risk scores to binary blackout using threshold
+    blackout_mask = df['risk_score'] > 0.5
+    lolp = blackout_mask.mean()
+    eens = df.loc[blackout_mask, 'p_load_mw'].sum()
 
     print(f"\n{'='*60}")
-    print("  Reliability Metrics  (full 30-day simulation)")
+    print("  Reliability Metrics  (from risk scores, threshold=0.5)")
     print(f"{'='*60}")
     print(f"  LOLP     : {lolp:.4f}  ({lolp*100:.2f}% of hours)")
     print(f"  EENS     : {eens:.3f} MWh over 30 days")
