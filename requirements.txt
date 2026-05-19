@@ -6,6 +6,5 @@ scikit-learn
 joblib
 streamlit
 plotly
-networkx
-scipy
+pandapower
 -e .
