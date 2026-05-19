@@ -122,6 +122,7 @@ def run_scenario_simulation(scenario_name: str, p_load: float, p_solar: float, p
         "p_loss": results["p_loss_mw"],
         "blackout_risk": blackout_risk,
         "zip_mode": results["zip_mode"],
+        "use_zip": use_zip
     }
 
 
