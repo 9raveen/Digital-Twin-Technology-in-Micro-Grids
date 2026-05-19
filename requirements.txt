@@ -1,10 +1,11 @@
+streamlit
 pandas
 numpy
-seaborn
 matplotlib
+seaborn
 scikit-learn
 joblib
-streamlit
 plotly
 pandapower
+xgboost
 -e .
