@@ -176,8 +176,13 @@ def run_load_flow(
 
     # ── Run AC Newton-Raphson load flow ────────────────────────────────────
     try:
-        pp.runpp(net, algorithm='nr', numba=False, verbose=False,
-                 voltage_depend_loads=has_zip)
+        pp.runpp(
+    net,
+    algorithm='nr',
+    numba=False,
+    verbose=False,
+    voltage_depend_loads=False
+)
         converged = True
     except pp.powerflow.LoadflowNotConverged:
         converged = False
