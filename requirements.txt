@@ -1,7 +1,7 @@
-pandas 
-numpy 
+pandas
+numpy
 seaborn
 matplotlib
 scikit-learn
 joblib
--e . # automatically trigger setup.py file
+-e .
