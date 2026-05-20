@@ -351,11 +351,11 @@ pip install -r requirements.txt
 
 ## 👥 Team
 
-| Name                        | Roll Number |
-| --------------------------- | ----------- |
-| Saidu Venkata Revanth Varma | BT23CSA003  |
-| Vankadoth Praveen           | BT23CSA037  |
-| Bojja Manikanta             | BT23CSA043  |
+| Name                        | 
+| --------------------------- | 
+| Saidu Venkata Revanth Varma | 
+| Vankadoth Praveen           | 
+| Bojja Manikanta             | 
 
 **Guide:** Dr. Khushboo A. Jain, Assistant Professor, CSE, IIIT Nagpur
 
