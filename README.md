@@ -12,6 +12,7 @@ A physics-informed offline Digital Twin of an IEEE 33-bus microgrid that simulat
 
 Developed as **Mini Project II** at the **Department of Computer Science & Engineering, IIIT Nagpur** (Jan–May 2026), under the supervision of **Dr. Khushboo A. Jain**.
 
+LIVE APP - https://digital-twin-microgrid-pr4.streamlit.app/
 ---
 
 ## 📋 Table of Contents
